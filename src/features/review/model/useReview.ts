@@ -12,8 +12,17 @@ export function useReview(song: Ref<Song>, line: Ref<LyricLine | null>, beforeLi
   let source: string | null = null
   let current: Take | undefined
   let frame = 0
-  const visible = computed(() => takes.value.filter(take => take.songId === song.value.id && take.lineId === line.value?.id))
+  // Takes of the selected line arrive newest first, matching the panel order.
+  const visible = computed(() => takes.value
+    .filter(take => take.songId === song.value.id && take.lineId === line.value?.id)
+    .sort((a, b) => b.createdAt - a.createdAt))
   const slots = computed(() => ids.value.map(id => visible.value.find(take => take.id === id)))
+
+  /** Prefer the two most recent passes of the line for the A/B comparison. */
+  function defaultSlots() {
+    const recent = visible.value.slice(0, 2)
+    ids.value = [recent[1]?.id ?? null, recent[0]?.id ?? null]
+  }
 
   function stop() {
     player.pause()
@@ -70,10 +79,15 @@ export function useReview(song: Ref<Song>, line: Ref<LyricLine | null>, beforeLi
   async function save(take: Take) {
     await writeTake(take)
     takes.value = [take, ...takes.value.filter(item => item.id !== take.id)]
-    if (visible.value.some(item => item.id === take.id)) {
-      if (!ids.value[0]) choose(0, take.id)
-      else if (!ids.value[1]) choose(1, take.id)
+    if (!visible.value.includes(take)) return
+    // A fresh recording session is compared pass by pass: start a new A/B
+    // pair so A is the first pass of that session and B the next one.
+    const chosen = slots.value.filter((entry): entry is Take => Boolean(entry))
+    if (chosen.length && chosen.every(entry => entry.sessionId !== take.sessionId)) {
+      ids.value = [null, null]
     }
+    if (!ids.value[0]) choose(0, take.id)
+    else if (!ids.value[1]) choose(1, take.id)
   }
 
   onMounted(async () => {
@@ -81,6 +95,7 @@ export function useReview(song: Ref<Song>, line: Ref<LyricLine | null>, beforeLi
       const stored = await readTakes()
       const known = new Set(takes.value.map(take => take.id))
       takes.value = [...takes.value, ...stored.filter(take => !known.has(take.id))].sort((a, b) => b.createdAt - a.createdAt)
+      defaultSlots()
     } catch {
       issue.value = '无法读取本机练习记录。'
     }

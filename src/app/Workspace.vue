@@ -9,7 +9,7 @@ import { useWorkspace } from './useWorkspace'
 
 const {
   transport, lyrics, pitch, review, capture, graphRange, graphPosition,
-  selectLine, adjacent, selectSong, seek, toggleLoop, togglePlay, toggleRecording, listen,
+  selectLine, adjacent, selectSong, seek, toggleLoop, togglePlay, toggleRecording, listen, slotOf,
 } = useWorkspace()
 </script>
 
@@ -32,6 +32,8 @@ const {
       <PitchPanel :notes="transport.song.value.notes" :position="graphPosition" :range="graphRange"
         :latest="capture.status.value === 'recording' ? pitch.latest.value : null"
         :live="capture.status.value === 'recording' ? pitch.points.value : []"
+        :pass="capture.pass.value"
+        :onsets="review.visible.value.map(take => ({ onset: take.onset, complete: take.complete }))"
         :take-a="review.slots.value[0]?.pitch ?? []" :take-b="review.slots.value[1]?.pitch ?? []" />
       <TransportBar :song="transport.song.value" :position="transport.position.value" :playing="transport.isPlaying.value"
         :loop="transport.loop.value" :volume="transport.volume.value" :issue="transport.issue.value"
@@ -43,7 +45,7 @@ const {
     <aside class="right-rail">
       <ReviewPanel :takes="review.visible.value" :slots="review.slots.value" :active-id="review.playingId.value"
         :selected="lyrics.selected.value" :notes="transport.song.value.notes" :issue="review.issue.value"
-        @listen="listen" @choose="review.choose" />
+        :slot-of="slotOf" @listen="listen" @choose="review.choose" />
     </aside>
   </main>
 </template>

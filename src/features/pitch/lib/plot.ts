@@ -4,11 +4,14 @@ import { noteName } from './detect'
 
 interface Trace { points: PitchPoint[]; color: string }
 
+interface Onset { onset: number | null; complete: boolean }
+
 interface Plot {
   position: number
   range: TimeRange
   notes: GuideNote[]
   traces: Trace[]
+  onsets?: Onset[]
 }
 
 export function drawPitch(canvas: HTMLCanvasElement, width: number, height: number, plot: Plot) {
@@ -83,6 +86,20 @@ export function drawPitch(canvas: HTMLCanvasElement, width: number, height: numb
       last = point
     }
     context.stroke()
+  }
+  // Each archived pass of the line gets a tick at its confirmed onset, so the
+  // A/B comparison shows where every pass actually opened.
+  for (const entry of plot.onsets ?? []) {
+    if (entry.onset === null || entry.onset < first || entry.onset > plot.range.end) continue
+    const px = x(entry.onset)
+    context.strokeStyle = entry.complete ? '#b8dc9d' : '#f09982'
+    context.lineWidth = 1
+    context.setLineDash(entry.complete ? [] : [3, 3])
+    context.beginPath()
+    context.moveTo(px, top)
+    context.lineTo(px, bottom)
+    context.stroke()
+    context.setLineDash([])
   }
   if (plot.position >= first && plot.position <= plot.range.end) {
     context.strokeStyle = '#f6eddb'

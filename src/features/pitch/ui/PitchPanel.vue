@@ -6,7 +6,8 @@ import { drawPitch } from '../lib/plot'
 
 const props = defineProps<{
   notes: GuideNote[]; position: number; range: TimeRange; latest: string | null
-  live: PitchPoint[]; takeA: PitchPoint[]; takeB: PitchPoint[]
+  live: PitchPoint[]; takeA: PitchPoint[]; takeB: PitchPoint[]; pass: number
+  onsets: { onset: number | null; complete: boolean }[]
 }>()
 const canvas = ref<HTMLCanvasElement | null>(null)
 const size = ref({ width: 0, height: 0 })
@@ -24,6 +25,7 @@ watchEffect(() => {
   if (!canvas.value || width < 80 || height < 80) return
   drawPitch(canvas.value, width, height, {
     notes: props.notes, range: props.range, position: props.position,
+    onsets: props.onsets,
     traces: [
       { points: props.takeA, color: '#85cbd5' },
       { points: props.takeB, color: '#ec9fa9' },
@@ -40,6 +42,9 @@ watchEffect(() => {
       <div class="pitch-legends">
         <span><i class="legend reference"></i>参考音</span><span><i class="legend live"></i>我的声音</span>
         <span v-if="takeA.length"><i class="legend a"></i>A</span><span v-if="takeB.length"><i class="legend b"></i>B</span>
+        <span v-if="pass > 0" class="mono">第 {{ pass + 1 }} 遍</span>
+        <span v-if="onsets.some(entry => entry.onset !== null)"><i class="legend onset"></i>开口</span>
+        <span v-if="onsets.some(entry => !entry.complete)"><i class="legend cut"></i>未完成</span>
       </div>
     </div>
     <canvas ref="canvas" class="pitch-canvas" role="img"

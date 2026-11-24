@@ -2,13 +2,14 @@ import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
 import { songs, useTransport } from '../features/playback'
 import { useLyrics } from '../features/lyrics'
 import { useCapture } from '../features/capture'
+import { toWave } from '../features/capture/lib/wave'
 import { usePitch } from '../features/pitch'
 import { useReview } from '../features/review'
 import type { Song, Take } from '../shared/document'
 
 export function useWorkspace() {
   const transport = useTransport(songs[0], {
-    beforeSeek: finishCapture, onPause: finishCapture, onLoop: finishCapture,
+    beforeSeek: finishCapture, onPause: finishCapture, onLoop: advanceCapture,
   })
   const lyrics = useLyrics(transport.song, transport.position)
   const pitch = usePitch()
@@ -17,11 +18,17 @@ export function useWorkspace() {
     transport.pause()
   })
   const capture = useCapture({
-    onFrame: pitch.receive,
+    onPitch: pitch.sample,
+    onLive: points => pitch.append(points.map(entry => entry.point)),
+    onPass: pitch.clear,
     position: transport.read,
     onComplete: async result => {
       await review.save({
-        ...result, id: crypto.randomUUID(), createdAt: Date.now(), pitch: pitch.slice(result),
+        ...result,
+        id: crypto.randomUUID(),
+        createdAt: Date.now(),
+        audio: toWave(result.parts, result.start, result.end, result.rate),
+        pitch: result.pitch,
       })
     },
   })
@@ -33,7 +40,11 @@ export function useWorkspace() {
   })
   const graphPosition = computed(() => review.position.value ?? transport.position.value)
 
+  /** Stop recording at the audible position. */
   function finishCapture(position: number): void { void capture.stop(position) }
+
+  /** The transport jumped back to the start of the looped line. */
+  function advanceCapture(): void { capture.loop() }
 
   function selectLine(id: string) {
     const line = lyrics.select(id)
@@ -104,6 +115,11 @@ export function useWorkspace() {
   }
 
   function listen(take: Take) { void review.listen(take) }
+  function slotOf(take: Take): 1 | 2 | null {
+    if (review.slots.value[0]?.id === take.id) return 1
+    if (review.slots.value[1]?.id === take.id) return 2
+    return null
+  }
 
   watch(transport.position, position => {
     const line = lyrics.selected.value
@@ -120,6 +136,6 @@ export function useWorkspace() {
 
   return {
     transport, lyrics, pitch, review, capture, graphRange, graphPosition,
-    selectLine, adjacent, selectSong, seek, toggleLoop, togglePlay, toggleRecording, listen,
+    selectLine, adjacent, selectSong, seek, toggleLoop, togglePlay, toggleRecording, listen, slotOf,
   }
 }

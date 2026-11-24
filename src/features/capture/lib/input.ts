@@ -34,12 +34,17 @@ export async function openInput(onFrame: (frame: PcmFrame) => void, onLost: () =
 
     function flush() {
       return new Promise<void>(resolve => {
-        const timer = window.setTimeout(resolve, 160)
+        const timer = window.setTimeout(resolve, 1200)
         onFlushed = () => { window.clearTimeout(timer); resolve() }
         node.port.postMessage('flush')
       })
     }
-    return { clock: () => audioContext.currentTime, sampleRate: audioContext.sampleRate, flush, close }
+    return {
+      clock: () => audioContext.currentTime,
+      sampleRate: audioContext.sampleRate,
+      flush,
+      close,
+    }
   } catch (error) {
     for (const track of stream.getTracks()) track.stop()
     if (context) void context.close()

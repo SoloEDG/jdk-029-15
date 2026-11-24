@@ -4,9 +4,17 @@ import type { GuideNote, LyricLine, Take } from '../../../shared/document'
 import { clockLabel } from '../../../shared/time'
 import { accuracy } from '../lib/summary'
 
-defineProps<{ takes: Take[]; slots: (Take | undefined)[]; activeId: string | null; selected: LyricLine | null; notes: GuideNote[]; issue: string }>()
+defineProps<{
+  takes: Take[]; slots: (Take | undefined)[]; activeId: string | null
+  selected: LyricLine | null; notes: GuideNote[]; issue: string
+  slotOf: (take: Take) => 1 | 2 | null
+}>()
 const emit = defineEmits<{ listen: [Take]; choose: [0 | 1, string] }>()
 const slotIndices = [0, 1] as const
+
+function onsetLabel(take: Take) {
+  return take.onset === null ? '未检测到起音' : `开口 ${clockLabel(take.onset, true)}`
+}
 </script>
 
 <template>
@@ -15,13 +23,17 @@ const slotIndices = [0, 1] as const
     <div class="review-line">{{ selected?.text ?? '未选择练习句' }}</div>
     <div v-if="!takes.length" class="empty-takes"><AudioLines :size="23" /><span>本句暂无录音</span></div>
     <ol v-else class="take-list">
-      <li v-for="(take, index) in takes" :key="take.id">
+      <li v-for="(take, index) in takes" :key="take.id" :class="{ unmarked: !take.complete }">
         <button class="icon-button listen-button" :aria-label="`${activeId === take.id ? '停止' : '播放'}录音 ${takes.length - index}`"
           @click="emit('listen', take)">
           <Square v-if="activeId === take.id" :size="13" fill="currentColor" /><Play v-else :size="13" fill="currentColor" />
         </button>
-        <div class="take-info"><strong>录音 {{ takes.length - index }}</strong>
-          <small class="mono">{{ clockLabel(take.start, true) }}–{{ clockLabel(take.end, true) }}</small></div>
+        <div class="take-info">
+          <strong>第 {{ take.pass + 1 }} 遍<template v-if="!take.complete"> · 未完成</template></strong>
+          <small class="mono">{{ clockLabel(take.start, true) }}–{{ clockLabel(take.end, true) }}</small>
+          <small class="take-onset">{{ onsetLabel(take) }}</small>
+        </div>
+        <span v-if="slotOf(take)" class="mono slot-tag" :class="`slot-${slotOf(take) === 1 ? 'a' : 'b'}`">{{ slotOf(take) === 1 ? 'A' : 'B' }}</span>
         <span class="mono take-score" title="检测到的音高中命中参考音的占比">{{ accuracy(take, notes) ?? '—' }}<template v-if="accuracy(take, notes) !== null">%</template></span>
       </li>
     </ol>
@@ -31,7 +43,7 @@ const slotIndices = [0, 1] as const
         <select :aria-label="slot === 0 ? '对比录音 A' : '对比录音 B'" :value="slots[slot]?.id ?? ''"
           @change="emit('choose', slot, ($event.target as HTMLSelectElement).value)">
           <option value="">未选择</option>
-          <option v-for="(take, index) in takes" :key="take.id" :value="take.id">录音 {{ takes.length - index }}</option>
+          <option v-for="(take, index) in takes" :key="take.id" :value="take.id">第 {{ take.pass + 1 }} 遍{{ take.complete ? '' : '（未完成）' }} · 开口 {{ clockLabel(take.onset ?? take.start, true) }}</option>
         </select>
       </label>
     </div>

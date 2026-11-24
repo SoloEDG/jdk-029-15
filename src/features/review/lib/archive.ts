@@ -26,5 +26,19 @@ async function transact<T>(mode: IDBTransactionMode, operation: (store: IDBObjec
   }
 }
 
-export const readTakes = () => transact<Take[]>('readonly', store => store.getAll())
+export async function readTakes() {
+  const stored = await transact<Take[]>('readonly', store => store.getAll())
+  return stored.map(normalizeTake)
+}
 export const writeTake = (take: Take) => transact('readwrite', store => store.put(take))
+
+/** Older snapshots predate pass metadata; keep them readable. */
+function normalizeTake(take: Take): Take {
+  return {
+    ...take,
+    sessionId: take.sessionId ?? take.id,
+    pass: take.pass ?? 0,
+    onset: take.onset ?? take.start,
+    complete: take.complete ?? true,
+  }
+}

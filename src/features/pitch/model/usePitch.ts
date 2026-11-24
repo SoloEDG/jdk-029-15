@@ -9,8 +9,14 @@ export function usePitch() {
     return midi == null ? null : noteName(midi)
   })
 
-  function receive(time: number, samples: Float32Array, rate: number) {
-    points.value = [...points.value, { time, midi: samplePitch(samples, rate) }]
+  /** Analyse one piece of a received frame without adding it to the live view. */
+  function sample(time: number, samples: Float32Array, rate: number) {
+    return { time, midi: samplePitch(samples, rate) }
+  }
+
+  /** Add the points that were actually audible in the current pass. */
+  function append(next: readonly PitchPoint[]) {
+    points.value = [...points.value, ...next]
   }
 
   function slice(range: TimeRange) {
@@ -18,5 +24,5 @@ export function usePitch() {
   }
 
   function clear() { points.value = [] }
-  return { points, latest, receive, slice, clear }
+  return { points, latest, sample, append, slice, clear }
 }

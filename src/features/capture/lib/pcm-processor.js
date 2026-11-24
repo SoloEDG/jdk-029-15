@@ -4,6 +4,8 @@ class PcmCapture extends AudioWorkletProcessor {
     this.frame = new Float32Array(2048)
     this.offset = 0
     this.startTime = 0
+    // Port messages are delivered in order, so the partial frame posted here
+    // is always handled before the flushed marker.
     this.port.onmessage = () => {
       this.send()
       this.port.postMessage({ flushed: true })

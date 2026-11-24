@@ -1,7 +1,7 @@
-import type { PcmFrame } from '../../../shared/document'
+import type { AudioPart } from '../../../shared/document'
 
-export function toWave(frames: readonly PcmFrame[], inputStart: number, duration: number, rate: number) {
-  const length = Math.max(0, Math.round(duration * rate))
+export function toWave(parts: readonly AudioPart[], start: number, end: number, rate: number) {
+  const length = Math.max(0, Math.round((end - start) * rate))
   const buffer = new ArrayBuffer(44 + length * 2)
   const view = new DataView(buffer)
   const mark = (offset: number, tag: string) => {
@@ -20,12 +20,15 @@ export function toWave(frames: readonly PcmFrame[], inputStart: number, duration
   view.setUint16(34, 16, true)
   mark(36, 'data')
   view.setUint32(40, length * 2, true)
-  for (const frame of frames) {
-    const offset = Math.round((frame.inputTime - inputStart) * rate)
+  // Every part is placed at its own absolute spot on the pass. Audio that
+  // sounded past the line boundary was clipped away before it got here, so a
+  // blocked loop jump cannot leak over the boundary.
+  for (const part of parts) {
+    const offset = Math.round((part.songTime - start) * rate)
     const first = Math.max(0, -offset)
-    const last = Math.min(frame.samples.length, length - offset)
+    const last = Math.min(part.samples.length, length - offset)
     for (let index = first; index < last; index++) {
-      const value = Math.max(-1, Math.min(1, frame.samples[index]))
+      const value = Math.max(-1, Math.min(1, part.samples[index]))
       view.setInt16(44 + 2 * (offset + index), Math.round(value * 32767), true)
     }
   }

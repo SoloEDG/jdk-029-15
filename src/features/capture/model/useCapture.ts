@@ -1,7 +1,7 @@
-import { onBeforeUnmount, ref } from 'vue'
-import type { PcmFrame, TimeRange } from '../../../shared/document'
+import { onBeforeUnmount, ref, shallowRef } from 'vue'
+import type { PitchPoint, PcmFrame, TimeRange } from '../../../shared/document'
 import { openInput } from '../lib/input'
-import { toWave } from '../lib/wave'
+import { createTimeline, type CaptureTimeline, type TakeAudio } from '../lib/timeline'
 
 interface CaptureTarget {
   songId: string
@@ -9,42 +9,72 @@ interface CaptureTarget {
   range: TimeRange
 }
 
-interface CapturedAudio extends TimeRange {
-  audio: Blob
-  songId: string
-  lineId: string
-}
-
 interface CaptureEvents {
-  onFrame: (time: number, samples: Float32Array, rate: number) => void
-  onComplete: (result: CapturedAudio) => Promise<void>
+  /** Places and analyses one piece of received audio. */
+  onPitch: (time: number, samples: Float32Array, rate: number) => PitchPoint
+  /** The pieces of a received frame, in the order they sounded. */
+  onLive: (points: { pass: number; point: PitchPoint }[]) => void
+  /** A new pass started; the live view should start from a blank trace. */
+  onPass: () => void
+  onComplete: (result: TakeAudio & { songId: string; lineId: string; sessionId: string }) => Promise<void>
   position: () => number
 }
 
 type Input = Awaited<ReturnType<typeof openInput>>
-type ActiveCapture = CaptureTarget & { inputStart: number; songStart: number; frames: PcmFrame[] }
+type Session = CaptureTarget & { stream: Input; timeline: CaptureTimeline; saved: number; sessionId: string }
 
 export function useCapture(events: CaptureEvents) {
   const status = ref<'idle' | 'requesting' | 'recording' | 'saving'>('idle')
   const issue = ref('')
   const level = ref(0)
-  let input: Input | null = null
-  let active: ActiveCapture | null = null
+  /** Zero-based pass currently being recorded, for the live view. */
+  const pass = ref(0)
+  const stream = shallowRef<Input | null>(null)
+  let session: Session | null = null
   let request = 0
+  let stopping: Promise<void> | null = null
 
   function receive(frame: PcmFrame) {
-    if (!active || !input) return
-    const time = active.songStart + frame.inputTime - active.inputStart
-    const end = time + frame.samples.length / input.sampleRate
-    if (end <= active.songStart || time >= active.range.end) return
-    active.frames.push(frame)
+    if (!session) return
+    const timeline = session.timeline
+    const result = timeline.receive(frame.inputTime, frame.samples, session.stream.sampleRate, events.onPitch)
+    for (const take of result.takes) void archive(session, take)
     if (status.value !== 'recording') return
     const rms = Math.sqrt(frame.samples.reduce((sum, value) => sum + value * value, 0) / frame.samples.length)
     level.value = Math.min(1, rms * 4)
-    const midpoint = (time + end) / 2
-    if (midpoint >= active.songStart && midpoint < active.range.end) {
-      events.onFrame(midpoint, frame.samples, input.sampleRate)
+    if (result.points.length) {
+      // A frame can straddle the jump; the live view shows only the newest
+      // pass so the previous pass's trace does not bleed into this one.
+      const newest = result.points[result.points.length - 1].pass
+      pass.value = newest
+      events.onLive(result.points.filter(entry => entry.pass === newest))
     }
+  }
+
+  async function archive(target: Session, take: TakeAudio) {
+    target.saved++
+    try {
+      await events.onComplete({
+        ...take, songId: target.songId, lineId: target.lineId, sessionId: target.sessionId,
+      })
+    } catch {
+      target.saved--
+      issue.value = '录音未能保存。'
+    }
+  }
+
+  /**
+   * The transport jumped back to the start of the line. Read the audio clock
+   * at once: because frames carry their own timestamps, even a notification
+   * delayed until after the jump still splits the audio at the right place.
+   * Audio that was held past the line end is resolved by this call.
+   */
+  function loop() {
+    if (!session) return
+    for (const take of session.timeline.jump(session.stream.clock())) void archive(session, take)
+    // The live pitch view belongs to one pass only; start the new pass clean.
+    pass.value++
+    events.onPass()
   }
 
   async function start(target: CaptureTarget, preparePlayback: () => Promise<boolean>) {
@@ -52,19 +82,15 @@ export function useCapture(events: CaptureEvents) {
     const token = ++request
     status.value = 'requesting'
     issue.value = ''
+    pass.value = 0
     try {
-      const stream = await openInput(receive, () => {
-        issue.value = '麦克风已断开。'
-        if (status.value === 'requesting') cancelRequest()
-        else void stop(events.position())
-      })
-      if (token !== request) { stream.close(); return }
-      input = stream
-      if (!await preparePlayback() || token !== request) {
-        if (input === stream) cancelRequest()
-        return
-      }
-      active = { ...target, inputStart: stream.clock(), songStart: events.position(), frames: [] }
+      const opened = await openInput(receive, lost)
+      if (token !== request) { opened.close(); return }
+      if (!await preparePlayback() || token !== request) { opened.close(); return }
+      const timeline = createTimeline(target.range, crypto.randomUUID())
+      timeline.begin(opened.clock(), events.position(), opened.sampleRate)
+      stream.value = opened
+      session = { ...target, stream: opened, timeline, saved: 0, sessionId: timeline.sessionId }
       status.value = 'recording'
     } catch (error) {
       if (token !== request) return
@@ -77,41 +103,50 @@ export function useCapture(events: CaptureEvents) {
   function cancelRequest() {
     if (status.value !== 'requesting') return
     request++
-    input?.close()
-    input = null
+    stream.value?.close()
+    stream.value = null
     status.value = 'idle'
   }
 
-  async function stop(position: number) {
-    if (status.value !== 'recording' || !active || !input) return
+  function stop(position: number) {
+    if (status.value !== 'recording' || !session) return stopping ?? Promise.resolve()
     status.value = 'saving'
-    const recording = active
-    const stream = input
-    const end = Math.max(recording.songStart, Math.min(position, recording.range.end))
-    const duration = end - recording.songStart
-    try {
-      await stream.flush()
-      if (duration < 0.2 || !recording.frames.length) {
-        issue.value = '录音少于 0.2 秒，未保存。'
-        return
+    const recording = session
+    // Capture ends now: audio captured after the stop is not credited to the
+    // silent tail. Frames still in flight are flushed and kept only if they
+    // were captured before this clock, so a confirmed onset is never lost.
+    recording.timeline.close(recording.stream.clock(), position)
+    stopping = (async () => {
+      try {
+        await recording.stream.flush()
+        for (const take of recording.timeline.finish()) await archive(recording, take)
+        if (!recording.saved) issue.value = '这一遍没有收到人声，未生成录音。'
+      } catch {
+        issue.value = '录音未能保存。'
+      } finally {
+        if (session === recording) session = null
+        recording.stream.close()
+        if (stream.value === recording.stream) stream.value = null
+        level.value = 0
+        status.value = 'idle'
+        stopping = null
       }
-      const audio = toWave(recording.frames, recording.inputStart, duration, stream.sampleRate)
-      await events.onComplete({ audio, start: recording.songStart, end, songId: recording.songId, lineId: recording.lineId })
-    } catch {
-      issue.value = '录音未能保存。'
-    } finally {
-      stream.close()
-      if (input === stream) input = null
-      active = null
-      level.value = 0
-      status.value = 'idle'
-    }
+    })()
+    return stopping
+  }
+
+  /** The microphone track ended; keep whatever was already confirmed. */
+  function lost() {
+    issue.value = '麦克风已断开。'
+    if (status.value === 'requesting') cancelRequest()
+    else if (status.value === 'recording' && session) void stop(events.position())
   }
 
   onBeforeUnmount(() => {
     request++
-    if (status.value !== 'saving') input?.close()
-    input = null
+    session = null
+    stream.value?.close()
+    stream.value = null
   })
-  return { status, issue, level, start, stop, cancelRequest }
+  return { status, issue, level, pass, start, stop, loop, cancelRequest }
 }

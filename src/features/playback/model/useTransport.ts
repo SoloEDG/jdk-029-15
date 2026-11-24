@@ -1,6 +1,11 @@
 import { computed, onBeforeUnmount, ref, shallowRef } from 'vue'
 import type { Song, TimeRange } from '../../../shared/document'
 
+/**
+ * `beforeSeek` / `onPause` receive the position that was actually audible
+ * before the operation. `onLoop` is called when playback leaves the loop,
+ * with the boundary time; the jump back is applied immediately afterwards.
+ */
 interface TransportEvents {
   beforeSeek: (position: number) => void
   onPause: (position: number) => void
@@ -19,12 +24,22 @@ export function useTransport(initial: Song, events: TransportEvents) {
   audio.volume = volume.value
   let render = 0
   let operation = 0
+  // True between asking for the loop jump and the element actually landing at
+  // the loop start. Without it a stale currentTime can report the boundary
+  // again and start a phantom extra pass.
+  let resetting = false
 
   function sync() {
     if (audio.seeking) return
     const next = audio.currentTime
     const range = loop.value
-    if (range && !audio.paused && next >= range.end) {
+    if (!range) {
+      resetting = false
+    } else if (next < range.end - 1e-3) {
+      resetting = false
+    } else if (!audio.paused) {
+      if (resetting) return
+      resetting = true
       events.onLoop(range.end)
       audio.currentTime = range.start
       position.value = range.start
@@ -42,6 +57,7 @@ export function useTransport(initial: Song, events: TransportEvents) {
 
   function seek(seconds: number) {
     const time = Math.max(0, Math.min(seconds, song.value.duration))
+    if (loop.value && time < loop.value.end - 1e-3) resetting = false
     events.beforeSeek(read())
     audio.currentTime = time
     position.value = time
@@ -49,6 +65,9 @@ export function useTransport(initial: Song, events: TransportEvents) {
 
   function pause() {
     operation++
+    // Observe a pending loop jump while the element is still playing, so a
+    // pause that arrives right after the jump is reported as the new pass.
+    sync()
     audio.pause()
     isPlaying.value = false
     events.onPause(read())
@@ -63,6 +82,7 @@ export function useTransport(initial: Song, events: TransportEvents) {
     const range = loop.value
     if (range && (read() < range.start || read() >= range.end)) seek(range.start)
     else if (audio.ended) seek(0)
+    resetting = false
     try {
       await audio.play()
       if (current !== operation) return false
